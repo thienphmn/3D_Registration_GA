@@ -1,0 +1,52 @@
+History:
+=== Representation of Individuals ===
+- real coded individuals where transformation parameters are encoded with floating point numbers [tx, ty, theta]
+    - avoids problems with binary encoding like hamming cliff
+    - allows for direct mutation and crossover of relevant transformation parameters
+    - avoids having to reconvert binary representations to real values used for actual transformation
+- understanding the problem necessary to simplify search space
+    - scaling made redundant because DICOM has information on voxel spacing in metadata
+    - shearing is made irrelevant because human anatomy normally doesnt change my shearing
+
+
+=== Similarity Metric ===
+- Mutual Information as the sum of the weighted ratio of joint probabilities over the individual probabilities of pixel
+intensities
+    - measures the statistical dependence between two images based on how often pixel intensities occur together
+- better than other similarity metrics like Mean Squared Difference because no linear dependence is assumed
+
+
+=== Construction of Algorithm ===
+- (µ+λ) Genetic Algorithm Strategy where µ=100 and λ=2*µ
+- binary encoding from previous interns scratched in favor of real valued individuals
+
+- initialize first generation and evaluate before generational loop
+- tournament selection with size=2 used for parent selection where parent_amount = µ
+- produce λ offspring using blended crossover where offspring is uniformly sampled around their parents' parameter range
+- mutate offspring with gaussian noise with mutation_strength = 20% global search space -> heavy exploration
+    - decrease mutation strength linearly with each generation to facilitate exploitation in later generations
+- evaluate offspring populations' fitness
+- join generational population and offspring with their respective fitness_scores; discard parent generation
+- take µ best individuals to pass to the next generation
+
+
+=== Convergence Metrics ===
+- Parameter Diversity, Mean Fitness, Best Fitness, Fitness Diversity
+- if best fitness and mean fitness converge to be the same too quickly it means diversity is lost too fast
+- if best fitness improves rapidly and fitness trails behind it is a good sign of a good algorithm that preserves
+diversity while improving on the best solution
+
+––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––
+
+Current 3D Development Issues:
+=== Downsampling ===
+- Isotropic not the best options as you lose lots of slices.
+    --> Solution: Do anisotropic downsampling to shrink x and y axes while preserving slice fidelity
+ITS INCOMPLETE AHHHHHH
+
+=== Rotation Representation ===
+Euler angles, Rotation Vectors or Quaternions
+
+
+
+
