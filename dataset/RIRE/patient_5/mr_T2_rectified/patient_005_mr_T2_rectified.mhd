@@ -1,0 +1,8 @@
+ObjectType = Image
+NDims = 3
+BinaryDataByteOrderMSB = True
+AnatomicalOrientation = LPH
+ElementSpacing = 1.252003 1.252003 4.093600
+DimSize = 256 256 26
+ElementType = MET_SHORT
+ElementDataFile = image.bin

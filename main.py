@@ -2,8 +2,7 @@ from modules import image_utils as iu
 import SimpleITK as sitk
 import numpy as np
 from joblib import Parallel, delayed
-import time
-import scipy
+import time, scipy, os
 import matplotlib.pyplot as plt
 
 
@@ -64,7 +63,7 @@ def tournament_selection(population: np.ndarray,
 
 
 # === Crossover Methods ===
-def select_parent_indices(selected_pop: np.ndarray, target_size: int) -> tuple:
+def create_mates(selected_pop: np.ndarray, target_size: int) -> tuple:
     """Randomly select parent indices indicating which parents will produce offspring"""
     if target_size % 2 != 0:
         target_size += 1
@@ -86,7 +85,7 @@ def arithmetic_crossover(selected_pop: np.ndarray,
                          target_size: int) -> np.ndarray:
     """Arithmetic Crossover, where the child is the weighted average of the parents."""
     # Get parent indices
-    parents1, parents2 = select_parent_indices(selected_pop, target_size)
+    parents1, parents2 = create_mates(selected_pop, target_size)
 
     # Randomize alphas and creating children
     alphas1 = np.random.uniform(0.1, 0.9, size=(target_size // 2, 1))
@@ -102,10 +101,12 @@ def arithmetic_crossover(selected_pop: np.ndarray,
 
 def blend_crossover(selected_pop: np.ndarray,
                     target_size: int,
-                    alpha: float = 0.5) -> np.ndarray:
+                    mins: np.ndarray,
+                    maxs: np.ndarray,
+                    alpha: float = 0.25) -> np.ndarray:
     """Blend Crossover, where children are sampled from an extended range around the parents' values."""
     # Get parent indices
-    parents1, parents2 = select_parent_indices(selected_pop=selected_pop, target_size=target_size)
+    parents1, parents2 = create_mates(selected_pop=selected_pop, target_size=target_size)
 
     # Calculate the range between parents for each parameter
     d = np.abs(parents1 - parents2)  # shape: (n_pairs, n_params)
@@ -115,8 +116,8 @@ def blend_crossover(selected_pop: np.ndarray,
     interval_max = np.maximum(parents1, parents2) + alpha * d
 
     # Sample children uniformly from the extended intervals
-    child1 = np.random.uniform(interval_min, interval_max)
-    child2 = np.random.uniform(interval_min, interval_max)
+    child1 = np.clip(np.random.uniform(interval_min, interval_max), mins, maxs)
+    child2 = np.clip(np.random.uniform(interval_min, interval_max), mins, maxs)
 
     # Stack all offspring and trim to exact target size
     offspring = np.vstack((child1, child2))[:target_size]
@@ -168,100 +169,96 @@ def compute_normalized_diversity(population: np.ndarray, min_bounds: np.ndarray,
     return avg_distance / max_distance
 
 
-def convergence_metrics(population: np.ndarray, fitness: np.ndarray, mutation_strength: np.ndarray,
+def convergence_metrics(population: np.ndarray, fitness: np.ndarray,
                         min_bounds: np.ndarray, max_bounds: np.ndarray) -> tuple:
     """Calculation of Convergence Metrics."""
     parameter_diversity = compute_normalized_diversity(population, min_bounds, max_bounds)
     fitness_std = np.std(fitness)
     fitness_mean = np.mean(fitness)
     fitness_best = np.max(fitness)
-    translation_mutation_rate = mutation_strength[0]
-    rotation_mutation_rate = mutation_strength[-1]
 
-    return parameter_diversity, fitness_std, fitness_mean, fitness_best, translation_mutation_rate, rotation_mutation_rate
+    return parameter_diversity, fitness_std, fitness_mean, fitness_best
 
 
 # === Genetic Algorithm Design (µ+λ) ===
-def main(fixed_image: sitk.Image, moving_image: sitk.Image):
+def run_genetic_algorithm(fixed_image: sitk.Image, moving_image: sitk.Image, modality: str):
     # Configuration Parameters
-    POP_SIZE = 100
-    MAX_GENERATION = 100
-    MIN_BOUNDS = np.array([-80.0, -80.0, -20.0, -15.0, -15.0, -15.0])  # order: [tx,ty,tz,rx,ry,rz]
-    MAX_BOUNDS = np.array([80.0, 80.0, 20.0, 15.0, 15.0, 15.0])
-    INITIAL_MUTATION_RATE = np.array([0.2 * np.abs(MIN_BOUNDS[0]-MAX_BOUNDS[0]),
-                                      0.2 * np.abs(MIN_BOUNDS[1]-MAX_BOUNDS[1]),
-                                      0.2 * np.abs(MIN_BOUNDS[2]-MAX_BOUNDS[2]),
-                                      0.2 * np.abs(MIN_BOUNDS[3]-MAX_BOUNDS[3]),
-                                      0.2 * np.abs(MIN_BOUNDS[4]-MAX_BOUNDS[4]),
-                                      0.2 * np.abs(MIN_BOUNDS[5]-MAX_BOUNDS[5])])
+    INITIAL_POP_SIZE = 100
+    MAX_GENERATION = 50
+    MIN_BOUNDS = np.array([-50.0, -50.0, -50.0, -5.0, -5.0, -10.0])  # order: [tx,ty,tz,rx,ry,rz]
+    MAX_BOUNDS = MIN_BOUNDS * -1
+    PARAMETER_RANGE_FRACTION = 0.15
+    INITIAL_MUTATION_RATE = np.array([PARAMETER_RANGE_FRACTION * np.abs(MIN_BOUNDS[0]-MAX_BOUNDS[0]),
+                                      PARAMETER_RANGE_FRACTION * np.abs(MIN_BOUNDS[1]-MAX_BOUNDS[1]),
+                                      PARAMETER_RANGE_FRACTION * np.abs(MIN_BOUNDS[2]-MAX_BOUNDS[2]),
+                                      PARAMETER_RANGE_FRACTION * np.abs(MIN_BOUNDS[3]-MAX_BOUNDS[3]),
+                                      PARAMETER_RANGE_FRACTION * np.abs(MIN_BOUNDS[4]-MAX_BOUNDS[4]),
+                                      PARAMETER_RANGE_FRACTION * np.abs(MIN_BOUNDS[5]-MAX_BOUNDS[5])])
 
     # Load CT (fixed) and MRI (moving) and their downscaled versions for coarse to fine registration
     fixed_full = fixed_image
     moving_full = moving_image
     fixed_eighth = iu.smooth_and_resample(fixed_full, 8)
-    moving_eighth = iu.smooth_and_resample(moving_full, 8)
     fixed_fourth = iu.smooth_and_resample(fixed_full, 4)
-    moving_fourth = iu.smooth_and_resample(moving_full, 4)
     fixed_half = iu.smooth_and_resample(fixed_full, 2)
     moving_half = iu.smooth_and_resample(moving_full, 2)
 
     # Initialize first generation and evaluate fitness
-    population = initialize_population(size=POP_SIZE,
+    population = initialize_population(size=INITIAL_POP_SIZE,
                                        tx_bounds=(MIN_BOUNDS[0], MAX_BOUNDS[0]),
                                        ty_bounds=(MIN_BOUNDS[1], MAX_BOUNDS[1]),
                                        tz_bounds=(MIN_BOUNDS[2], MAX_BOUNDS[2]),
                                        rx_bounds=(MIN_BOUNDS[3], MAX_BOUNDS[3]),
                                        ry_bounds=(MIN_BOUNDS[4], MAX_BOUNDS[4]),
                                        rz_bounds=(MIN_BOUNDS[5], MAX_BOUNDS[5]))
-    fitness = evaluate_fitness(fixed=fixed_eighth, moving=moving_eighth, population=population)
-    mutation_rate = INITIAL_MUTATION_RATE.copy()
+    fitness = evaluate_fitness(fixed=fixed_eighth, moving=moving_half, population=population)
 
     # Initialize empty arrays to save convergence metrics
     parameter_diversity = np.empty(shape=(MAX_GENERATION+1,))
     fitness_std = np.empty(shape=(MAX_GENERATION+1,))
     fitness_mean = np.empty(shape=(MAX_GENERATION+1,))
     fitness_best = np.empty(shape=(MAX_GENERATION+1,))
-    translation_mutation_rate = np.empty(shape=(MAX_GENERATION+1,))
-    rotation_mutation_rate = np.empty(shape=(MAX_GENERATION+1,))
 
     # Core Genetic Algorithm Loop
     start = time.perf_counter()
 
-    # Pyramid registration setup
+    # Pyramid registration setup and adaptive population size
     for generation in range(MAX_GENERATION):
-        if generation <= int(MAX_GENERATION * 0.85):
+        if generation <= int(MAX_GENERATION * 0.5):
             fixed = fixed_eighth
-            moving = moving_eighth
-        elif generation <= int(MAX_GENERATION * 0.9):
-            fixed = fixed_fourth
-            moving = moving_fourth
-        elif generation <= int(MAX_GENERATION * 0.99):
-            fixed = fixed_half
             moving = moving_half
+            pop_size = int(INITIAL_POP_SIZE)
+        elif generation <= int(MAX_GENERATION * 0.8):
+            fixed = fixed_fourth
+            moving = moving_full
+            pop_size = int(INITIAL_POP_SIZE * (3/4))
+        elif generation <= int(MAX_GENERATION * 0.95):
+            fixed = fixed_half
+            moving = moving_full
+            pop_size = int(INITIAL_POP_SIZE * (2/4))
         else:
             fixed = fixed_full
             moving = moving_full
+            pop_size = int(INITIAL_POP_SIZE * (1/4))
+
 
         # Recording Metrics
-        (p_diversity, fit_std, fit_mean, fit_best,
-         t_mut_rate, rot_mut_rate) = convergence_metrics(population=population,
-                                                         fitness=fitness,
-                                                         mutation_strength=mutation_rate,
-                                                         min_bounds=MIN_BOUNDS,
-                                                         max_bounds=MAX_BOUNDS)
+        (p_diversity, fit_std, fit_mean, fit_best) = convergence_metrics(population=population,
+                                                                         fitness=fitness,
+                                                                         min_bounds=MIN_BOUNDS,
+                                                                         max_bounds=MAX_BOUNDS)
         parameter_diversity[generation] = p_diversity
         fitness_std[generation] = fit_std
         fitness_mean[generation] = fit_mean
         fitness_best[generation] = fit_best
-        translation_mutation_rate[generation] = t_mut_rate
-        rotation_mutation_rate[generation] = rot_mut_rate
 
         # Parent Selection
         parents = tournament_selection(population=population, fitness=fitness,
-                                       num_selected=POP_SIZE, tournament_size=2)[0]
+                                       num_selected=pop_size, tournament_size=2)[0]
 
         # Offspring creation
-        offspring = blend_crossover(selected_pop=parents, target_size=3*POP_SIZE, alpha=0.25)
+        offspring = blend_crossover(selected_pop=parents, target_size=3 * pop_size, alpha=0.3,
+                                    mins=MIN_BOUNDS, maxs=MAX_BOUNDS)
 
         # Offspring mutation
         mutation_rate = linear_decrease_mutation(initial_rate=INITIAL_MUTATION_RATE,
@@ -281,10 +278,10 @@ def main(fixed_image: sitk.Image, moving_image: sitk.Image):
         combined_fitness = np.concatenate([fitness, offspring_fitness])
 
         # Select best mu individuals
-        best_indices = np.argsort(combined_fitness)[-POP_SIZE:]
+        best_indices = np.argsort(combined_fitness)[-pop_size:]
         population = combined_pop[best_indices]
         fitness = combined_fitness[best_indices]
-        print(f"Generation {generation} done.")
+        print(f"Generation {generation+1} done.")
 
     # Get optimal transformation parameters for transformation of moving image
     best_index = np.argmax(fitness)
@@ -294,21 +291,17 @@ def main(fixed_image: sitk.Image, moving_image: sitk.Image):
     print(f"Time to optimize registration: {end-start} seconds.")
 
     # Recording Metrics for the last generation
-    (p_diversity, fit_std, fit_mean, fit_best,
-     t_mut_rate, rot_mut_rate) = convergence_metrics(population=population,
-                                                     fitness=fitness,
-                                                     mutation_strength=mutation_rate,
-                                                     min_bounds=MIN_BOUNDS,
-                                                     max_bounds=MAX_BOUNDS)
+    (p_diversity, fit_std, fit_mean, fit_best) = convergence_metrics(population=population,
+                                                                     fitness=fitness,
+                                                                     min_bounds=MIN_BOUNDS,
+                                                                     max_bounds=MAX_BOUNDS)
     parameter_diversity[MAX_GENERATION] = p_diversity
     fitness_std[MAX_GENERATION] = fit_std
     fitness_mean[MAX_GENERATION] = fit_mean
     fitness_best[MAX_GENERATION] = fit_best
-    translation_mutation_rate[MAX_GENERATION] = t_mut_rate
-    rotation_mutation_rate[MAX_GENERATION] = rot_mut_rate
 
     # Plotting convergence metrics
-    fig, axs = plt.subplots(3, 2, figsize=(12, 14))
+    fig, axs = plt.subplots(2, 2, figsize=(12, 8))
     axs = axs.ravel()
 
     axs[0].plot(parameter_diversity, label="Parameter Diversity", color="purple")
@@ -339,36 +332,27 @@ def main(fixed_image: sitk.Image, moving_image: sitk.Image):
     axs[3].legend()
     axs[3].grid(True, alpha=0.3)
 
-    axs[4].plot(translation_mutation_rate, label="Translation Mutation Rate", color="red")
-    axs[4].set_title("Translation Mutation Rate (Adaptive)")
-    axs[4].set_ylabel("Rate")
-    axs[4].set_xlabel("Generation")
-    axs[4].legend()
-    axs[4].grid(True, alpha=0.3)
-
-    axs[5].plot(rotation_mutation_rate, label="Rotation Mutation Rate", color="brown")
-    axs[5].set_title("Rotation Mutation Rate (Adaptive)")
-    axs[5].set_ylabel("Rate")
-    axs[5].set_xlabel("Generation")
-    axs[5].legend()
-    axs[5].grid(True, alpha=0.3)
-
     plt.tight_layout()
+    plt.savefig(os.path.join("results", "graphs", f"{modality}"))
     plt.show()
     plt.close()
 
     return best_individual, best_score
 
 
-if __name__ == "__main__":
-    ct = iu.load_image("./dataset/RIRE/ct/training_001_ct.mhd", "CT")
-    t1 = iu.load_image("./dataset/RIRE/mr_T1_rectified/training_001_mr_T1_rectified.mhd", "MR")
-    t2 = iu.load_image("./dataset/RIRE/mr_T2_rectified/training_001_mr_T2_rectified.mhd", "MR")
-    pd = iu.load_image("./dataset/RIRE/mr_PD_rectified/training_001_mr_PD_rectified.mhd", "MR")
+def main(patient_number: str, modality: str):
+    ct_path = os.path.abspath(os.path.join("dataset", "RIRE", f"patient_{patient_number}", "ct",
+                                           f"patient_00{patient_number}_ct.mhd"))
+    mri_path = os.path.abspath(os.path.join("dataset", "RIRE", f"patient_{patient_number}", f"mr_{modality}_rectified",
+                                            f"patient_00{patient_number}_mr_{modality}_rectified.mhd"))
 
+    ct = iu.load_image(ct_path, "CT")
+    mri = iu.load_image(mri_path, "MRI")
 
-    best_individual, best_score = main(fixed_image=ct, moving_image=t2)
-    resampled_image = iu.transform_image(moving=t2, fixed=ct,
+    best_individual, best_score = run_genetic_algorithm(fixed_image=ct, moving_image=mri, modality=modality)
+    print(best_individual, best_score)
+
+    resampled_image = iu.transform_image(moving=mri, fixed=ct,
                                          tx=float(best_individual[0]),
                                          ty=float(best_individual[1]),
                                          tz=float(best_individual[2]),
@@ -376,6 +360,33 @@ if __name__ == "__main__":
                                          ry=float(best_individual[4]),
                                          rz=float(best_individual[5]))
 
-    iu.show_registered_images(ct, resampled_image, True)
+    volume_folder = os.path.abspath(os.path.join("results", "volumes", f"patient_{patient_number}_{modality}.nii.gz"))
+    sitk.WriteImage(resampled_image, volume_folder)
 
 
+
+if __name__ == "__main__":
+    patient_number = "3"
+    modality = "T2"
+
+    # main(patient_number, modality)
+
+    # === For visualising results ===
+    ct_path = os.path.abspath(os.path.join("dataset", "RIRE", f"patient_{patient_number}", "ct",
+                                           f"patient_00{patient_number}_ct.mhd"))
+    mri_path = os.path.abspath(os.path.join("dataset", "RIRE", f"patient_{patient_number}", f"mr_{modality}_rectified",
+                                            f"patient_00{patient_number}_mr_{modality}_rectified.mhd"))
+    mri_registered_path = os.path.abspath(os.path.join("results", "volumes", f"patient_{patient_number}_{modality}.nii.gz"))
+
+    ct = iu.load_image(ct_path, "CT")
+    ct_padded = sitk.ConstantPad(ct,
+                          padLowerBound = [10,10,10],
+                          padUpperBound = [10,10,10],
+                          constant = 0.0)
+    mri = iu.load_image(mri_path, "MRI")
+    mri_registered = sitk.ReadImage(mri_registered_path)
+
+    iu.show_3d(ct_padded, mri)
+    iu.show_3d(ct_padded, mri_registered)
+    iu.show_registered_images(ct, mri)
+    iu.show_registered_images(ct, mri_registered, True)

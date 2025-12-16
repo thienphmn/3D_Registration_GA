@@ -1,2 +1,1 @@
-import numpy as np
-print(np.abs(-20-20))
+print(int(0.75 * 100))

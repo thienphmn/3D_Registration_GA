@@ -2,9 +2,9 @@ import SimpleITK as sitk
 import numpy as np
 import matplotlib.pyplot as plt
 import os, time
+import pyvista as pv
 
-
-# === Loading and Saving images ===
+# === Image Loading/Saving and Preprocessing ===
 def load_image(path: str, modality: str, wl: int=40, ww: int=400, smooth: bool=True) -> sitk.Image:
     """
         Load images and apply appropriate preprocessing for image registration.
@@ -32,8 +32,8 @@ def load_image(path: str, modality: str, wl: int=40, ww: int=400, smooth: bool=T
 
         # Pad Image
         image = sitk.ConstantPad(image,
-                                 padLowerBound=[10,10,10],
-                                 padUpperBound=[10,10,10],
+                                 padLowerBound=[25,25,25],
+                                 padUpperBound=[25,25,25],
                                  constant=0.0)
 
     if smooth:
@@ -180,13 +180,13 @@ def convert_mhd_to_dicom(path_to_mhd: str, modality: str) -> None:
     print("DICOM series written to:", output_dir)
 
 
-def smooth_and_resample(image: sitk.Image, shrink: int|list):
+def smooth_and_resample(image: sitk.Image, shrink: int|list) -> sitk.Image:
     """
     Args:
         image: SimpleITK image.
         shrink: shrink factor for anisotropic shrinking in x and y directions
     Return:
-        Smoothed and downsampled image with preserved metadata.
+        Smoothed and downsampled image with preserved spatial metadata.
     """
     # Normalize shrink factor to 3-element list
     if isinstance(shrink, int):
@@ -208,22 +208,60 @@ def smooth_and_resample(image: sitk.Image, shrink: int|list):
     return sitk.Shrink(blurred, shrink)
 
 
-# === Visualizing Images ===
-def show_slices(image: sitk.Image) -> None:
+def resample_isotropic(image, spacing: float = 1.0) -> sitk.Image:
     """
-    Show all axial slices of a given image.
+    Resample to Isotropic Resolution for proper 3D visualization.
+    Args:
+        image: SimpleITK image
+        spacing: new isotropic spacing for voxels
+    Returns:
+        Resampled SimpleITK image with isotropic voxels
+    """
+    original_spacing = image.GetSpacing()
+    original_size = image.GetSize()
+
+    # Compute new size based on spacing ratio
+    new_spacing = (spacing, spacing, spacing)
+    new_size = [
+        int(round(osz * ospc / nspc))
+        for osz, ospc, nspc in zip(original_size, original_spacing, new_spacing)]
+
+    resampler = sitk.ResampleImageFilter()
+    resampler.SetOutputSpacing(new_spacing)
+    resampler.SetSize(new_size)
+    resampler.SetOutputDirection(image.GetDirection())
+    resampler.SetOutputOrigin(image.GetOrigin())
+    resampler.SetInterpolator(sitk.sitkLinear)
+    return resampler.Execute(image)
+
+
+# === Visualizing Images ===
+def show_slices(image: sitk.Image, axis: int = 0, make_isotropic: bool = False) -> None:
+    """
+    Show all slices of a given image along the given axis.
     Args:
         image: sitk.Image object
     Returns:
         None
     """
-    array = sitk.GetArrayFromImage(image)
-    for SLICE in range(len(array)):
-        plt.figure(figsize=(7, 7))
-        plt.imshow(array[SLICE], cmap="grey", vmin=array.min(), vmax=array.max())
-        plt.show()
-        plt.close()
+    if make_isotropic:
+        image = resample_isotropic(image)
 
+    array = sitk.GetArrayFromImage(image)
+    for SLICE in range(array.shape[axis]):
+        plt.figure(figsize=(7, 7))
+        if axis == 0:
+            plt.imshow(array[SLICE,:,:], cmap="grey", vmin=array.min(), vmax=array.max())
+            plt.show()
+            plt.close()
+        elif axis == 1:
+            plt.imshow(array[:,SLICE,:], cmap="grey", vmin=array.min(), vmax=array.max())
+            plt.show()
+            plt.close()
+        else:
+            plt.imshow(array[:,:,SLICE], cmap="grey", vmin=array.min(), vmax=array.max())
+            plt.show()
+            plt.close()
 
 def show_registered_images(fixed: sitk.Image, moving: sitk.Image, grey_fusion:bool=False) -> None:
     """
@@ -231,11 +269,11 @@ def show_registered_images(fixed: sitk.Image, moving: sitk.Image, grey_fusion:bo
     Args:
         fixed: sitk.Image object
         moving: sitk.Image object
-        transform: Transformation that is applied to the moving image
         grey_fusion: whether to apply grey fusion
     Returns:
-        None
+        Shows
     """
+    # Resample moving image into fixed image's coordinate system
     resampled_moving = sitk.Resample(image1=moving,
                                      referenceImage=fixed,
                                      transform=sitk.Transform(),
@@ -264,6 +302,37 @@ def show_registered_images(fixed: sitk.Image, moving: sitk.Image, grey_fusion:bo
             plt.axis('off')
             plt.show()
             plt.close()
+
+def show_3d(fixed_image: sitk.Image, moving_image: sitk.Image) -> None:
+    """Visualize two 3D isotropic volumes in 3D space for teaching purposes."""
+    fixed_image = resample_isotropic(fixed_image)
+    moving_image = resample_isotropic(moving_image)
+
+    moving_image[moving_image < 5] = 0
+    # Resample MRI to CT space
+    resampled_image = sitk.Resample(image1=moving_image,
+                                    referenceImage=fixed_image,
+                                    transform=sitk.Transform(),
+                                    interpolator=sitk.sitkLinear,
+                                    defaultPixelValue=0.0)
+
+    # Convert volumes to arrays
+    ct_array = sitk.GetArrayFromImage(fixed_image)
+    mri_array = sitk.GetArrayFromImage(resampled_image)
+
+    # Wrap arrays as pyvista objects
+    ct_volume = pv.wrap(ct_array)
+    mri_volume = pv.wrap(mri_array)
+
+    # Plotter creation
+    plotter = pv.Plotter(window_size=[1920,1080])
+
+    # Add medical image volumes
+    plotter.add_volume(ct_volume, cmap="Greens", opacity="sigmoid", name="CT", show_scalar_bar=False)
+    plotter.add_volume(mri_volume, cmap="Reds", opacity="sigmoid_7", name="MRI", show_scalar_bar=False)
+    plotter.show_grid()
+    plotter.view_zx(negative=True)
+    plotter.show()
 
 
 # === 3D Image Transformations ===
@@ -396,10 +465,7 @@ def calculate_mutual_information(fixed: sitk.Image, resampled: sitk.Image, num_b
         Mutual information between fixed and resampled image
     """
     registration = sitk.ImageRegistrationMethod()
-    registration.SetMetricAsJointHistogramMutualInformation(numberOfHistogramBins=num_bins)
-    registration.SetInitialTransform(sitk.Transform())
-    registration.SetInterpolator(sitk.sitkLinear)
-
+    registration.SetMetricAsMattesMutualInformation(numberOfHistogramBins=num_bins)
 
     mutual_information = -registration.MetricEvaluate(fixed, resampled)
     return mutual_information
@@ -407,20 +473,19 @@ def calculate_mutual_information(fixed: sitk.Image, resampled: sitk.Image, num_b
 
 
 if __name__ == "__main__":
-    ct = load_image("/Users/thien/Documents/Development/3D_Image_Reg/dataset/RIRE/ct/training_001_ct.mhd","CT")
-    pd = load_image("/Users/thien/Documents/Development/3D_Image_Reg/dataset/RIRE/mr_PD_rectified/training_001_mr_PD_rectified.mhd","MR")
-    t1 = load_image("/Users/thien/Documents/Development/3D_Image_Reg/dataset/RIRE/mr_T1_rectified/training_001_mr_T1_rectified.mhd", "MR")
-    t2 = load_image("/Users/thien/Documents/Development/3D_Image_Reg/dataset/RIRE/mr_T2_rectified/training_001_mr_T2_rectified.mhd", "MR")
+    patient_number = 2
+    mri_modality = "PD"
 
+    ct = load_image(f"/Users/thien/Documents/Development/3D_Image_Reg/dataset/RIRE/patient_{patient_number}/"
+                    f"ct/patient_00{patient_number}_ct.mhd","CT")
+    mri = load_image(f"/Users/thien/Documents/Development/3D_Image_Reg/dataset/RIRE/patient_{patient_number}"
+                    f"/mr_{mri_modality}_rectified/patient_00{patient_number}_mr_{mri_modality}_rectified.mhd", "MR")
+
+    print("CT volume information:")
     show_sitk_img_info(ct)
-    print()
-    show_sitk_img_info(pd)
-    print()
-    show_sitk_img_info(t1)
-    print()
-    show_sitk_img_info(t2)
-    print()
+    print("\nMRI volume information:")
+    show_sitk_img_info(mri)
 
-    show_registered_images(ct, pd)
-    # show_registered_images(ct, t1)
-    # show_registered_images(ct, t2)
+
+    # === Work Bench Area ===
+    # show_3d(mri, mri)

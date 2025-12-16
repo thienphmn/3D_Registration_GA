@@ -42,10 +42,25 @@ Current 3D Development Issues:
 === Downsampling ===
 - Isotropic not the best options as you lose lots of slices.
     --> Solution: Do anisotropic downsampling to shrink x and y axes while preserving slice fidelity
-ITS INCOMPLETE AHHHHHH
+- MRIs start out having significantly lower resolution than CT scans, so MRIs are shrunken by smaller factors
+  than CT scans
 
 === Rotation Representation ===
-Euler angles, Rotation Vectors or Quaternions
+- Euler angles, Rotation Vectors or Quaternions -> Rotation Vector chosen for its simplicity and continuity
+
+=== Balancing Exploration with Exploitation ===
+- at the start alpha=0.5 for blended crossover and mutation_strength = 20% of paramter range with linear decrease
+    --> especially in the beginning, many individuals were pushed to very edge of parameter ranges
+        this lead to moving image being pushed completely out of bounds so that its domain only consists of 0 values
+        --> leads to falsified high MI score because joint histograms are concentrated on the bottom of the histogram
+- now alpha = 0.2 and initial mutation strength = 0.15
+- high initial µ with λ=3 to favor diversity and not lose promising solution regions
+    - lower µ in later generations when diversity shrinks and GA optimizes a singular valley with global maximum
+
+=== Physical Space Registration ===
+- allows for easy dynamic resolution handling (coarse-to-fine registration, resolution mismatches between MRI/CT)
+- resampling is my best friend <3 (very important to get render one image into the other's coordinate system)
+- 6 Degrees of Freedom (more transformation parameters to optimize vs 2D registration)
 
 
 

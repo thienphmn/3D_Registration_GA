@@ -1,0 +1,37 @@
+Modality := MR
+Manufacturer:= Siemens
+Insititution ID := Vanderbilt University Medical Center
+Comments := Confidential.  For use only in NIH R01MS/CA33926-01, Fitzpatrick, PI.
+
+Other Patient ID's := 008
+Comments := Patient ID is fictitious.
+
+Contrast/Bolus agent := Gadolinium
+Scanning sequence := SE
+Slice thickness := 4.055600
+Repetition time := 800
+Echo time := 15 
+Number of averages := 2
+Comments := T1 weighted
+
+Study := 4
+Series := 1
+Acquisition := 1
+Patient orientation := L : P : H
+Source image IDs := 3\1\1 : 3\1\2
+Modified image description := Rectified image
+Comments := Image is a composition of two acquisitions.
+
+Image dimensions := 3
+Rows := 256
+Columns := 256
+Slices := 26
+Pixel size := 1.266464 : 1.266464
+Compression code := Unix compress command
+Bits allocated := 16
+Bits stored := 16
+High bit := 15
+Pixel representation := 1
+Smallest pixel value := -32,768
+Largest pixel value := +32,767
+
